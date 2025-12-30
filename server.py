@@ -76,39 +76,47 @@ class Socks5Server:
         # Start listening for incoming connections
         # backlog parameter specifies maximum queued connections
         self.server_socket.listen(BACKLOG)
+        
+        # Set socket timeout to allow KeyboardInterrupt to be caught
+        self.server_socket.settimeout(0.5)  # Accept will timeout every 500 ms
 
         logger.info(f'SOCKS5 server listening on {self.host}:{self.port}')
 
         try:
             # Main server loop: accept connections continuously
             while True:
-                # Accept incoming connection
-                # This blocks until a client connects
-                client_socket, client_address = self.server_socket.accept()
+                try:
+                    # Accept incoming connection
+                    # This blocks until a client connects
+                    client_socket, client_address = self.server_socket.accept()
 
-                # Log new connection
-                logger.info(f'New connection from {client_address[0]}:{client_address[1]}')
+                    # Log new connection
+                    logger.info(f'New connection from {client_address[0]}:{client_address[1]}')
 
-                # Create a new thread to handle this client
-                # Each thread handles one client connection independently
-                client_thread = threading.Thread(
-                    target=self.handle_client,
-                    args=(client_socket, client_address)
-                )
+                    # Create a new thread to handle this client
+                    # Each thread handles one client connection independently
+                    client_thread = threading.Thread(
+                        target=self.handle_client,
+                        args=(client_socket, client_address)
+                    )
 
-                # Set as daemon thread so it doesn't prevent program exit
-                client_thread.daemon = THREAD_DAEMON
+                    # Set as daemon thread so it doesn't prevent program exit
+                    client_thread.daemon = THREAD_DAEMON
 
-                # Start the handler thread
-                client_thread.start()
+                    # Start the handler thread
+                    client_thread.start()
+                    
+                except socket.timeout:
+                    # This exception occurs every 0.5 seconds when no connection arrives
+                    # It allows the loop to check for KeyboardInterrupt
+                    continue
 
         except KeyboardInterrupt:
             # User interrupted with Ctrl+C
             logger.info('Server shutting down...')
         finally:
             # Ensure server socket is closed
-            self.server_socket.close()
-            logger.info('Server stopped')
+            self.stop()
 
     def handle_client(self, client_socket, client_address):
         """
@@ -174,3 +182,18 @@ class Socks5Server:
                 client_socket.close()
             except Exception:
                 pass
+            
+    def stop(self):
+        """
+        Stop the SOCKSv5 server.
+
+        This method closes the server socket, effectively stopping
+        the server from accepting new connections.
+
+        Note:
+            - Existing client connections will remain active until they close.
+            - This method can be called to gracefully shutdown the server.
+        """
+        if self.server_socket:
+            self.server_socket.close()
+            logger.info('Server stopped')
