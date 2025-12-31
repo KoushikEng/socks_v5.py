@@ -34,7 +34,7 @@ jobs:
             --platform=linux/${{ matrix.arch }} \
             -v "$PWD:/app" \
             -w /app \
-            python:3.12-slim \
+            python:3.12-slim-bookworm \
             bash -c "
               set -eux
               apt-get update
@@ -44,7 +44,7 @@ jobs:
                 patchelf
 
               pip3 install --upgrade pip
-              pip3 install nuitka
+              pip3 install --root-user-action=ignore nuitka
 
               python3 -m nuitka \
                 --follow-imports \
