@@ -11,7 +11,8 @@ import logging
 
 from config import HANDSHAKE_BUFFER_SIZE
 from protocol import (
-    SOCKS_VERSION, NO_AUTH, NO_ACCEPTABLE_METHODS,
+    SOCKS_VERSION, NO_AUTH, NO_ACCEPTABLE_METHODS, USERNAME_PASSWORD,
+    AUTH_SUCCESS, AUTH_FAILURE,
     CMD_CONNECT, ATYP_IPV4, ATYP_DOMAIN, ATYP_IPV6,
     REP_SUCCESS, REP_GENERAL_FAILURE, REP_HOST_UNREACHABLE,
     REP_CONNECTION_REFUSED, REP_COMMAND_NOT_SUPPORTED,
@@ -21,7 +22,7 @@ from protocol import (
 logger = logging.getLogger(__name__)
 
 
-def perform_handshake(client_socket):
+def perform_handshake(client_socket, auth_manager=None):
     """
     Performs SOCKS5 handshake with the client.
 
@@ -29,19 +30,16 @@ def perform_handshake(client_socket):
     1. Client sends a greeting with supported authentication methods
     2. Server selects a method and responds
 
-    This server currently supports only NO_AUTH (method 0x00).
+    This server supports NO_AUTH (0x00) and USERNAME_PASSWORD (0x02).
 
     Args:
         client_socket: Socket connected to the SOCKS client
+        auth_manager: AuthenticationManager instance (optional)
 
     Returns:
-        bool: True if handshake succeeded, False otherwise
-
-    Process:
-        1. Read client greeting (VER + NMETHODS + METHODS)
-        2. Validate SOCKS version (must be 0x05)
-        3. Check if NO_AUTH method is supported
-        4. Send response with selected method or NO_ACCEPTABLE_METHODS
+        tuple: (bool, int) - (handshake_success, selected_method)
+            - handshake_success: True if handshake succeeded, False otherwise
+            - selected_method: The authentication method selected
     """
     try:
         # Read client greeting message
@@ -51,7 +49,7 @@ def perform_handshake(client_socket):
         # Validate minimum handshake length
         if len(data) < 3:
             logger.warning('Handshake too short')
-            return False
+            return False, None
 
         # Parse version and number of methods
         version, nmethods = struct.unpack('!BB', data[:2])
@@ -59,25 +57,112 @@ def perform_handshake(client_socket):
         # Validate SOCKS version
         if version != SOCKS_VERSION:
             logger.warning(f'Invalid SOCKS version: {version}')
-            return False
+            return False, None
 
         # Extract list of authentication methods supported by client
         methods = list(data[2:2 + nmethods])
+        logger.debug(f'Client supported methods: {methods}')
+        
+        # Determine supported methods based on configuration
+        supported_methods = [NO_AUTH]
+        if auth_manager and auth_manager.has_users():
+            supported_methods.append(USERNAME_PASSWORD)
 
-        # Check if NO_AUTH is in the supported methods
-        if NO_AUTH in methods:
-            # Send response: select NO_AUTH method
-            client_socket.sendall(struct.pack('!BB', SOCKS_VERSION, NO_AUTH))
-            logger.debug('Handshake completed with NO_AUTH')
-            return True
-        else:
-            # Send response: no acceptable method
+        # Find first common method between client and server
+        selected_method = None
+        methods.sort(reverse=True)  # Prefer USERNAME_PASSWORD if available
+        for method in methods:
+            if method in supported_methods:
+                selected_method = method
+                break
+
+        # Check if we found a compatible method
+        if selected_method is None:
+            # No acceptable method found
             client_socket.sendall(struct.pack('!BB', SOCKS_VERSION, NO_ACCEPTABLE_METHODS))
             logger.warning('No acceptable authentication method')
-            return False
+            return False, None
+
+        # Send response with selected method
+        client_socket.sendall(struct.pack('!BB', SOCKS_VERSION, selected_method))
+        logger.debug(f'Handshake completed with method: {selected_method}')
+        return True, selected_method
 
     except Exception as e:
         logger.error(f'Handshake error: {e}')
+        return False, None
+
+
+def authenticate_user_password(client_socket, auth_manager):
+    """
+    Perform username/password authentication after handshake.
+    
+    Protocol format:
+    +----+------+----------+------+----------+
+    |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+    +----+------+----------+------+----------+
+    | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+    +----+------+----------+------+----------+
+    
+    Args:
+        client_socket: Socket connected to the SOCKS client
+        auth_manager: AuthenticationManager instance
+        
+    Returns:
+        bool: True if authentication successful, False otherwise
+    """
+    try:
+        # Read authentication request
+        data = client_socket.recv(HANDSHAKE_BUFFER_SIZE)
+        
+        if len(data) < 3:
+            logger.warning('Authentication request too short')
+            return False
+        
+        # Parse authentication version (should be 0x01 for username/password)
+        auth_version = data[0]
+        if auth_version != 0x01:
+            logger.warning(f'Invalid authentication version: {auth_version}')
+            return False
+        
+        # Parse username length and username
+        ulen = data[1]
+        if len(data) < 2 + ulen + 1:
+            logger.warning('Incomplete username in auth request')
+            return False
+        
+        username = data[2:2 + ulen].decode('utf-8', errors='ignore')
+        
+        # Parse password length and password
+        plen_start = 2 + ulen
+        plen = data[plen_start]
+        if len(data) < plen_start + 1 + plen:
+            logger.warning('Incomplete password in auth request')
+            return False
+        
+        password = data[plen_start + 1:plen_start + 1 + plen].decode('utf-8', errors='ignore')
+        
+        logger.debug(f'Authentication attempt for user: {username}')
+        
+        # Validate credentials
+        if auth_manager.authenticate(username, password):
+            # Send authentication success
+            client_socket.sendall(bytes([0x01, AUTH_SUCCESS]))
+            logger.info(f'User authenticated: {username}')
+            return True
+        else:
+            # Send authentication failure
+            client_socket.sendall(bytes([0x01, AUTH_FAILURE]))
+            logger.warning(f'Authentication failed for user: {username}')
+            return False
+            
+    except Exception as e:
+        logger.error(f'Authentication error: {e}')
+        try:
+            # Send authentication failure on error
+            client_socket.sendall(bytes([0x01, AUTH_FAILURE]))
+        except:
+            pass
         return False
 
 

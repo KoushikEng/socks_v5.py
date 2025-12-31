@@ -16,10 +16,17 @@ SOCKS_VERSION = 0x05
 # Method 0x00: No authentication required
 NO_AUTH = 0x00
 
+# Method 0x02: Username/password authentication
+USERNAME_PASSWORD = 0x02
+
 # Method 0xFF: No acceptable methods (client and server have no common auth method)
 NO_ACCEPTABLE_METHODS = 0xFF
 
-# Note: Other methods like 0x02 (Username/Password), 0x03 (GSSAPI) are not implemented
+
+# ==================== Authentication Status Codes ====================
+# Username/password authentication status codes
+AUTH_SUCCESS = 0x00
+AUTH_FAILURE = 0x01
 
 
 # ==================== SOCKS Commands ====================
@@ -83,4 +90,4 @@ RESERVED = 0x00
 MIN_HANDSHAKE_LENGTH = 3
 
 # Minimum request length: VER(1) + CMD(1) + RSV(1) + ATYP(1) + ADDR(min 4) + PORT(2)
-MIN_REQUEST_LENGTH = 4
+MIN_REQUEST_LENGTH = 4 

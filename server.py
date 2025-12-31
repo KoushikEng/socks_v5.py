@@ -9,8 +9,8 @@ import socket
 import threading
 import logging
 
-from config import DEFAULT_HOST, DEFAULT_PORT, BACKLOG, SOCKET_REUSE_ADDR, THREAD_DAEMON
-from protocol import CMD_CONNECT, REP_COMMAND_NOT_SUPPORTED
+from config import DEFAULT_HOST, DEFAULT_PORT, BACKLOG, SOCKET_REUSE_ADDR, THREAD_DAEMON, ENABLE_AUTH, AUTH_FILE_PATH
+from protocol import CMD_CONNECT, REP_COMMAND_NOT_SUPPORTED, USERNAME_PASSWORD, NO_AUTH
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +31,31 @@ class Socks5Server:
         server_socket (socket.socket): Server socket object
     """
 
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, enable_auth=ENABLE_AUTH):
         """
         Initialize the SOCKSv5 server.
 
         Args:
             host (str): Host address to bind to (default: 0.0.0.0)
             port (int): Port number to listen on (default: 1080)
+            enable_auth (bool): Whether to enable authentication (default: from config)
         """
         self.host = host
         self.port = port
         self.server_socket = None
-        logger.debug(f'Server initialized: {host}:{port}')
+        self.ENFORCE_AUTH = enable_auth
+        
+        # Initialize authentication manager if enabled
+        self.auth_manager = None
+        if enable_auth:
+            from auth import AuthenticationManager
+            self.auth_manager = AuthenticationManager(AUTH_FILE_PATH)
+            
+            if not self.auth_manager.has_users():
+                logger.warning('Authentication enabled but no users configured')
+                logger.warning('Server will accept connections without authentication')
+        
+        logger.debug(f'Server initialized: {host}:{port}, Authentication: {enable_auth}')
 
     def start(self):
         """
@@ -81,6 +94,10 @@ class Socks5Server:
         self.server_socket.settimeout(0.5)  # Accept will timeout every 500 ms
 
         logger.info(f'SOCKS5 server listening on {self.host}:{self.port}')
+        if self.auth_manager:
+            logger.info(f'Authentication: {"Enabled" if self.auth_manager.has_users() else "Available (no users configured)"}')
+        else:
+            logger.info('Authentication: Disabled')
 
         try:
             # Main server loop: accept connections continuously
@@ -124,9 +141,10 @@ class Socks5Server:
 
         This method runs in a separate thread for each client and:
         1. Performs SOCKS5 handshake
-        2. Parses the client request
-        3. Handles CONNECT commands
-        4. Closes the connection on error or completion
+        2. If USERNAME_PASSWORD method selected, performs authentication
+        3. Parses the client request
+        4. Handles CONNECT commands
+        5. Closes the connection on error or completion
 
         Args:
             client_socket (socket.socket): Socket connected to the client
@@ -147,20 +165,46 @@ class Socks5Server:
         try:
             # Step 1: Perform SOCKS5 handshake
             # This negotiates authentication method with client
-            from handlers import perform_handshake
+            from handlers import perform_handshake, authenticate_user_password
 
-            if not perform_handshake(client_socket):
+            handshake_success, selected_method = perform_handshake(
+                client_socket, 
+                self.auth_manager
+            )
+
+            logger.debug(f'Handshake result for {client_address}: success={handshake_success}, method={'NO_AUTH' if selected_method == 0 else 'USERNAME_PASSWORD'}')
+
+            if not handshake_success:
                 # Handshake failed, close connection
                 client_socket.close()
                 return
+            
+            # Step 2: Enforce authentication if required
+            # If authentication is enforced and no authentication method was selected, close connection
+            if self.ENFORCE_AUTH and selected_method == NO_AUTH:
+                logger.debug(f'Authentication required but not selected by client {client_address}')
+                client_socket.close()
+                return
 
-            # Step 2: Parse client request
+            # Step 3: Perform authentication if USERNAME_PASSWORD method selected
+            if selected_method == USERNAME_PASSWORD:
+                if not self.auth_manager:
+                    logger.error('Username/password authentication requested but auth manager not initialized')
+                    client_socket.close()
+                    return
+                
+                if not authenticate_user_password(client_socket, self.auth_manager):
+                    # Authentication failed, close connection
+                    client_socket.close()
+                    return
+            
+            # Step 4: Parse client request
             # Extract command, address type, destination address, and port
             from handlers import parse_request
 
             cmd, atyp, dst_addr, dst_port = parse_request(client_socket)
 
-            # Step 3: Handle the command
+            # Step 5: Handle the command
             if cmd == CMD_CONNECT:
                 # CONNECT command: establish TCP connection to destination
                 from handlers import handle_connect

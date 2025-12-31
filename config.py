@@ -49,3 +49,16 @@ SOCKET_REUSE_ADDR = True
 # Whether client handler threads should be daemon threads
 # Daemon threads are terminated when the main program exits
 THREAD_DAEMON = True
+
+
+# ==================== Authentication Configuration ====================
+# Enable username/password authentication (True/False)
+# If False, server will accept connections without authentication
+ENABLE_AUTH = False
+
+# Path to authentication file (JSON format with username: password pairs)
+# File format: {"username1": "password1", "username2": "password2"}
+AUTH_FILE_PATH = 'users.json'
+
+# Minimum password length (enforced when adding users)
+MIN_PASSWORD_LENGTH = 3
